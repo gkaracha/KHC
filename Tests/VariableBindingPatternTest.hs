@@ -2,8 +2,8 @@ data Number = Zero | Succ Number
 
 data List (a :: *) = Nil | Cons a (List a)
 
--- Regular patterns test
+-- Variable binding at first level
 \x. let length = \y. case y of
-        x       -> Zero
-    in
-    length (Cons Zero Nil)
+    x       -> Zero
+  in
+  length (Cons Zero Nil)
