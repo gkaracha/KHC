@@ -490,23 +490,29 @@ elabTmCase scr alts = do
   fc_alts <- mapM (elabHsAlt scr_ty rhs_ty) alts -- Check the alternatives
   return (rhs_ty, FcTmCase fc_scr fc_alts)
 
+getExps :: [RnPat] -> [RnTmVar]
+getExps []                   = [] 
+getExps ((HsPatCons _ _):_ ) = error "Not implemented yet"
+getExps ((HsPatVar  x  ):ps) = x : getExps ps
+
 -- | Elaborate a case alternative
 elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> RnMonoTy {- Result type           -}
           -> RnAlt    {- Case alternative      -}
           -> GenM FcAlt
-elabHsAlt _ _ _ = notImplemented "Alt elaboration"
--- elabHsAlt scr_ty res_ty (HsAlt (HsPat dc xs) rhs) = do
---   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
---   fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation
---
---   (bs, ty_subst) <- liftGenM (freshenRnTyVars as)               -- Generate fresh universal type variables for the universal tvs
---   let arg_tys = map (substInPolyTy ty_subst) orig_arg_tys       -- Apply the renaming substitution to the argument types
---   (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)   -- Type check the right hand side
---   storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)  -- The scrutinee type must match the pattern type
---             , res_ty :~: rhs_ty ]                               -- All right hand sides should be the same
---
---   return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
+elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented yet"
+elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
+  (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
+  fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation
+
+  (bs, ty_subst) <- liftGenM (freshenRnTyVars as)                 -- Generate fresh universal type variables for the universal tvs
+  let arg_tys = map (substInPolyTy ty_subst) orig_arg_tys         -- Apply the renaming substitution to the argument types
+  let xs = getExps pats
+  (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)   -- Type check the right hand side
+  storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)    -- The scrutinee type must match the pattern type
+        , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
+  return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
+
 
 -- | Covert a renamed type variable to a System F type
 rnTyVarToFcType :: RnTyVar -> FcType
