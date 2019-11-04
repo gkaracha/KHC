@@ -491,8 +491,8 @@ elabTmCase scr alts = do
   return (rhs_ty, FcTmCase fc_scr fc_alts)
 
 getExps :: [RnPat] -> [RnTmVar]
-getExps []                   = [] 
-getExps ((HsPatCons _ _):_ ) = error "Not implemented yet"
+getExps []                   = []
+getExps ((HsPatCons _ _):_ ) = error "Not implemented: Nested patterns"
 getExps ((HsPatVar  x  ):ps) = x : getExps ps
 
 -- | Elaborate a case alternative
@@ -500,7 +500,7 @@ elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> RnMonoTy {- Result type           -}
           -> RnAlt    {- Case alternative      -}
           -> GenM FcAlt
-elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented yet"
+elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented: first level variable binding "
 elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
   fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation
