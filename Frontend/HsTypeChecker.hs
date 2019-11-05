@@ -484,6 +484,7 @@ polyTysToMonoTysM (ty:tys) = case polyTyToMonoTy ty of
 
 -- | Elaborate a case expression
 elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
+elabTmCase scr ((HsAlt (HsPatVar x) rhs):_) = elabTmApp (TmAbs x rhs) scr
 elabTmCase scr alts = do
   (scr_ty, fc_scr) <- elabTerm scr               -- Elaborate the scrutinee
   rhs_ty  <- TyVar <$> freshRnTyVar KStar        -- Generate a fresh type variable for the result
