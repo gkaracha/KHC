@@ -256,6 +256,7 @@ pTerm  =  pAppTerm
           <*> some (indent pAlt)
 
 -- | Parse a pattern
+-- | TODO: support parenthesized patterns
 pPat :: PsM PsPat
 pPat =  HsPatCons <$> pDataCon <*> many pPat
     <|> HsPatVar <$> pTmVar
