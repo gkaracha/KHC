@@ -510,7 +510,7 @@ elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   let xs = getExps pats
   (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)   -- Type check the right hand side
   storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)    -- The scrutinee type must match the pattern type
-        , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
+            , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
   return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
 
 
