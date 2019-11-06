@@ -484,7 +484,7 @@ polyTysToMonoTysM (ty:tys) = case polyTyToMonoTy ty of
 
 -- | Elaborate a case expression
 elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
-elabTmCase scr ((HsAlt (HsPatVar x) rhs):_) = elabTmApp (TmAbs x rhs) scr
+elabTmCase scr ((HsAlt (HsPatVar x) rhs):_) = elabTmApp (TmAbs x rhs) scr -- In case of top level variable binding, convert it to abstraction and application
 elabTmCase scr alts = do
   (scr_ty, fc_scr) <- elabTerm scr               -- Elaborate the scrutinee
   rhs_ty  <- TyVar <$> freshRnTyVar KStar        -- Generate a fresh type variable for the result
@@ -501,7 +501,7 @@ elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> RnMonoTy {- Result type           -}
           -> RnAlt    {- Case alternative      -}
           -> GenM FcAlt
-elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented: first level variable binding "
+elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented: top level variable binding "
 elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
   fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation
@@ -509,7 +509,7 @@ elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   (bs, ty_subst) <- liftGenM (freshenRnTyVars as)                 -- Generate fresh universal type variables for the universal tvs
   let arg_tys = map (substInPolyTy ty_subst) orig_arg_tys         -- Apply the renaming substitution to the argument types
   let xs = getExps pats
-  (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)   -- Type check the right hand side
+  (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)     -- Type check the right hand side
   storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)    -- The scrutinee type must match the pattern type
             , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
   return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
