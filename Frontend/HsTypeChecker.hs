@@ -482,6 +482,26 @@ polyTysToMonoTysM (ty:tys) = case polyTyToMonoTy ty of
   Just mono_ty -> fmap (mono_ty:) (polyTysToMonoTysM tys)
   Nothing      -> throwErrorM (text "polyTysToMonoTysM" <+> colon <+> text "non-monotype")
 
+-- | Covert a renamed type variable to a System F type
+rnTyVarToFcType :: RnTyVar -> FcType
+rnTyVarToFcType = FcTyVar . rnTyVarToFcTyVar
+
+-- | Covert a list of renamed type variables to a list of System F types
+rnTyVarsToFcTypes :: [RnTyVar] -> [FcType]
+rnTyVarsToFcTypes = map rnTyVarToFcType
+
+-- | Covert a renamed term variable to a System F term
+rnTmVarToFcTerm :: RnTmVar -> FcTerm
+rnTmVarToFcTerm = FcTmVar . rnTmVarToFcTmVar
+
+-- * Pattern Match Elaboration
+-- ----------------------------------------------------
+
+type Equation = ([RnPat], RnTerm)
+
+altToEquation :: RnAlt -> Equation
+altToEquation (HsAlt p t) = ([p], t)
+
 -- | Elaborate a case expression
 elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
 elabTmCase scr ((HsAlt (HsPatVar x) rhs):_) = elabTmApp (TmAbs x rhs) scr -- In case of top level variable binding, convert it to abstraction and application
@@ -490,6 +510,90 @@ elabTmCase scr alts = do
   rhs_ty  <- TyVar <$> freshRnTyVar KStar        -- Generate a fresh type variable for the result
   fc_alts <- mapM (elabHsAlt scr_ty rhs_ty) alts -- Check the alternatives
   return (rhs_ty, FcTmCase fc_scr fc_alts)
+
+-- | Suprised all this doesn't exist yet? Is it needed?
+-- | Substitute (in the given pattern) all variables equal to given HsTmVar with second HsTmVar
+substPat :: Eq a => HsTmVar a -> HsTmVar a -> HsPat a -> HsPat a
+substPat v1 v2 (HsPatVar v)
+  | v == v1                     = HsPatVar v2
+  | otherwise                   = HsPatVar v
+substPat v1 v2 (HsPatCons c ps) = HsPatCons c (map (substPat v1 v2) ps)
+-- | Substitute (in the given alternative) all variables equal to given HsTmVar with second HsTmVar
+substAlt :: Eq a => HsTmVar a -> HsTmVar a -> HsAlt a -> HsAlt a
+substAlt v1 v2 (HsAlt p t) = HsAlt (substPat v1 v2 p) (subst v1 v2 t)
+-- | Substitute (in the given Term) all variables equal to given HsTmVar with second HsTmVar
+subst :: Eq a => HsTmVar a -> HsTmVar a -> Term a -> Term a
+subst v1 v2 t' = case t' of
+  TmVar v
+    | v == v1    -> TmVar    v2
+    | otherwise  -> TmVar    v
+  TmCon c        -> TmCon    c
+  TmAbs v t      -> TmAbs    v (subst v1 v2 t)
+  TmApp t1 t2    -> TmApp    (subst v1 v2 t1) (subst v1 v2 t2)
+  TmLet v t1 t2  -> TmLet    v (subst v1 v2 t1) (subst v1 v2 t2)
+  TmCase t as    -> TmCase   (subst v1 v2 t) (map (substAlt v1 v2) as)
+  TmFatBar t1 t2 -> TmFatBar (subst v1 v2 t1) (subst v1 v2 t2)
+
+-- | Check if an alternative equation contains a variable
+isVar :: Equation -> Bool
+isVar (((HsPatVar _):_), _) = True
+isVar (((HsPatCons _ _):_), _) = False
+
+-- | Check if an alternative equation contains a constructor
+isCon :: Equation -> Bool
+isCon = not . isVar
+
+-- | Get the constructor from an alternative equation
+getCon :: Equation -> RnDataCon
+getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor alternative"
+getCon (((HsPatCons c _):_), _) = c
+
+-- | Generate fresh renamed variable
+makeVar :: RnTmVar
+makeVar = error "Not implemented" -- TODO
+
+-- TODO: DOCU
+choose :: RnDataCon -> [Equation] -> [Equation]
+choose c qs = [q | q <- qs, (getCon q) == c]
+
+-- Get list of all related data constructors
+constructors :: RnDataCon -> [RnDataCon]
+constructors c = error "Not implemented" -- TODO
+
+-- Get ariry of data constructor
+arity :: RnDataCon -> Int
+arity c = error "Not implemented" -- TODO
+
+-- | Apply variable rule
+matchVar :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+matchVar (u:us) qs def = match us [(ps, subst u v e) | ((HsPatVar v):ps, e) <- qs] def
+
+-- | Match alternative (equivalent to matchClause in algorithm description)
+matchAlt :: RnDataCon -> [RnTmVar] -> [Equation] -> RnTerm -> RnAlt
+matchAlt c (u:us) qs def =
+  HsAlt (HsPatCons c (map (HsPatVar) us')) (match (us' ++ us)
+                                 [(ps' ++ ps, e) | (HsPatCons c ps' : ps, e) <- qs]
+                                 def)
+  where
+    k'  = arity c
+    us' = [makeVar | i <- [1..k']]
+
+-- | Apply constructor rule
+matchCon :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+matchCon (u:us) qs def = TmCase (TmVar u) [matchAlt c (u:us) (choose c qs) def | c <- cs]
+  where
+    cs = constructors $ getCon $ head qs
+
+-- | Is given list of variable and alternatives and calls matchVar or matchCon
+matchVarCon :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+matchVarCon us qs def
+  | isVar $ head qs = matchVar us qs def
+  | isCon $ head qs = matchCon us qs def
+
+-- | Match function
+match :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+match [] qs def = foldr TmFatBar         def [e | ([], e) <- qs]
+match us qs def = foldr (matchVarCon us) def (partition isVar qs)
 
 getExps :: [RnPat] -> [RnTmVar]
 getExps []                   = []
@@ -513,19 +617,6 @@ elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)    -- The scrutinee type must match the pattern type
             , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
   return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
-
-
--- | Covert a renamed type variable to a System F type
-rnTyVarToFcType :: RnTyVar -> FcType
-rnTyVarToFcType = FcTyVar . rnTyVarToFcTyVar
-
--- | Covert a list of renamed type variables to a list of System F types
-rnTyVarsToFcTypes :: [RnTyVar] -> [FcType]
-rnTyVarsToFcTypes = map rnTyVarToFcType
-
--- | Covert a renamed term variable to a System F term
-rnTmVarToFcTerm :: RnTmVar -> FcTerm
-rnTmVarToFcTerm = FcTmVar . rnTmVarToFcTmVar
 
 -- * Type Unification
 -- ------------------------------------------------------------------------------
