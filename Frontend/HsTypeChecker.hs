@@ -498,9 +498,9 @@ rnTmVarToFcTerm = FcTmVar . rnTmVarToFcTmVar
 -- * Pattern Match Elaboration
 -- ----------------------------------------------------
 
-type Equation = ([RnPat], RnTerm)
+type PmEquation = ([RnPat], RnTerm)
 
-altToEquation :: RnAlt -> Equation
+altToEquation :: RnAlt -> PmEquation
 altToEquation (HsAlt p t) = ([p], t)
 
 -- | Elaborate a case expression
@@ -536,16 +536,16 @@ substTm v1 v2 t' = case t' of
   TmFatBar t1 t2 -> TmFatBar (substTm v1 v2 t1) (substTm v1 v2 t2)
 
 -- | Check if an alternative equation contains a variable
-isVar :: Equation -> Bool
+isVar :: PmEquation -> Bool
 isVar (((HsPatVar _):_), _) = True
 isVar _ = False
 
 -- | Check if an alternative equation contains a constructor
-isCon :: Equation -> Bool
+isCon :: PmEquation -> Bool
 isCon = not . isVar
 
 -- | Get the constructor from an alternative equation
-getCon :: Equation -> RnDataCon
+getCon :: PmEquation -> RnDataCon
 getCon ([], _)                  = error "getCon called on empty equation"
 getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor equation"
 getCon (((HsPatCons c _):_), _) = c
@@ -555,7 +555,7 @@ makeVar :: GenM RnTmVar
 makeVar = freshRnTmVar
 
 -- TODO: DOCU
-choose :: RnDataCon -> [Equation] -> [Equation]
+choose :: RnDataCon -> [PmEquation] -> [PmEquation]
 choose c qs = [q | q <- qs, (getCon q) == c]
 
 -- Get list of all related data constructors
@@ -567,12 +567,12 @@ arity :: RnDataCon -> Int
 arity k = error "Not implemented" -- TODO
 
 -- | Apply variable rule
-matchVar :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+matchVar :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchVar [] qs def = error "matchVar called with no variables"
 matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
-matchAlt :: RnDataCon -> [RnTmVar] -> [Equation] -> RnTerm -> GenM RnAlt
+matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnAlt
 matchAlt c []     qs def = error "matchAlt called with no variables"
 matchAlt c (u:us) qs def = do
   let k' = arity c
@@ -581,7 +581,7 @@ matchAlt c (u:us) qs def = do
   return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
 
 -- | Apply constructor rule
-matchCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+matchCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchCon []     qs def = error "matchCon called with no variables"
 matchCon (u:us) qs def = do
   cs   <- constructors $ getCon $ head qs
@@ -589,14 +589,14 @@ matchCon (u:us) qs def = do
   return $ TmCase (TmVar u) alts
 
 -- | Is given list of variable and alternatives and calls matchVar or matchCon
-matchVarCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+matchVarCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
   | isCon $ head qs = matchCon us qs def
   | otherwise       = error "Equation does not start with constructor or variable"
 
 -- | Match function
-match :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+match :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 match [] qs def = return $ foldr TmFatBar         def [e | ([], e) <- qs]
 match us qs def = foldrM (matchVarCon us) def (partition isVar qs)
 
