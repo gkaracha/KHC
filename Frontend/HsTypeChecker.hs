@@ -32,6 +32,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Control.Arrow (second)
 import Data.List (nub, (\\))
+import Data.Foldable (foldrM)
 
 -- * Create the typechecking environment from the renaming one
 -- ------------------------------------------------------------------------------
@@ -549,15 +550,15 @@ getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor alte
 getCon (((HsPatCons c _):_), _) = c
 
 -- | Generate fresh renamed variable
-makeVar :: RnTmVar
-makeVar = error "Not implemented" -- TODO
+makeVar :: GenM RnTmVar
+makeVar = freshRnTmVar
 
 -- TODO: DOCU
 choose :: RnDataCon -> [Equation] -> [Equation]
 choose c qs = [q | q <- qs, (getCon q) == c]
 
 -- Get list of all related data constructors
-constructors :: RnDataCon -> [RnDataCon]
+constructors :: RnDataCon -> GenM [RnDataCon]
 constructors c = error "Not implemented" -- TODO
 
 -- Get ariry of data constructor
@@ -565,35 +566,34 @@ arity :: RnDataCon -> Int
 arity c = error "Not implemented" -- TODO
 
 -- | Apply variable rule
-matchVar :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+matchVar :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
 matchVar (u:us) qs def = match us [(ps, subst u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
-matchAlt :: RnDataCon -> [RnTmVar] -> [Equation] -> RnTerm -> RnAlt
-matchAlt c (u:us) qs def =
-  HsAlt (HsPatCons c (map (HsPatVar) us')) (match (us' ++ us)
-                                 [(ps' ++ ps, e) | (HsPatCons c ps' : ps, e) <- qs]
-                                 def)
-  where
-    k'  = arity c
-    us' = [makeVar | i <- [1..k']]
+matchAlt :: RnDataCon -> [RnTmVar] -> [Equation] -> RnTerm -> GenM RnAlt
+matchAlt c (u:us) qs def = do
+  let k' = arity c
+  us' <- replicateM k' makeVar
+  matched <- (match (us' ++ us) [(ps' ++ ps, e) | (HsPatCons c ps' : ps, e) <- qs] def)
+  return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
 
 -- | Apply constructor rule
-matchCon :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
-matchCon (u:us) qs def = TmCase (TmVar u) [matchAlt c (u:us) (choose c qs) def | c <- cs]
-  where
-    cs = constructors $ getCon $ head qs
+matchCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+matchCon (u:us) qs def = do
+  cs   <- constructors $ getCon $ head qs
+  alts <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
+  return $ TmCase (TmVar u) alts
 
 -- | Is given list of variable and alternatives and calls matchVar or matchCon
-matchVarCon :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
+matchVarCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
   | isCon $ head qs = matchCon us qs def
 
 -- | Match function
-match :: [RnTmVar] -> [Equation] -> RnTerm -> RnTerm
-match [] qs def = foldr TmFatBar         def [e | ([], e) <- qs]
-match us qs def = foldr (matchVarCon us) def (partition isVar qs)
+match :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+match [] qs def = return $ foldr TmFatBar         def [e | ([], e) <- qs]
+match us qs def = foldrM (matchVarCon us) def (partition isVar qs)
 
 getExps :: [RnPat] -> [RnTmVar]
 getExps []                   = []
