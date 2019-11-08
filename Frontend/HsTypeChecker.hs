@@ -521,24 +521,24 @@ substPat v1 v2 (HsPatVar v)
 substPat v1 v2 (HsPatCons c ps) = HsPatCons c (map (substPat v1 v2) ps)
 -- | Substitute (in the given alternative) all variables equal to given HsTmVar with second HsTmVar
 substAlt :: Eq a => HsTmVar a -> HsTmVar a -> HsAlt a -> HsAlt a
-substAlt v1 v2 (HsAlt p t) = HsAlt (substPat v1 v2 p) (subst v1 v2 t)
+substAlt v1 v2 (HsAlt p t) = HsAlt (substPat v1 v2 p) (substTm v1 v2 t)
 -- | Substitute (in the given Term) all variables equal to given HsTmVar with second HsTmVar
-subst :: Eq a => HsTmVar a -> HsTmVar a -> Term a -> Term a
-subst v1 v2 t' = case t' of
+substTm :: Eq a => HsTmVar a -> HsTmVar a -> Term a -> Term a
+substTm v1 v2 t' = case t' of
   TmVar v
     | v == v1    -> TmVar    v2
     | otherwise  -> TmVar    v
   TmCon c        -> TmCon    c
-  TmAbs v t      -> TmAbs    v (subst v1 v2 t)
-  TmApp t1 t2    -> TmApp    (subst v1 v2 t1) (subst v1 v2 t2)
-  TmLet v t1 t2  -> TmLet    v (subst v1 v2 t1) (subst v1 v2 t2)
-  TmCase t as    -> TmCase   (subst v1 v2 t) (map (substAlt v1 v2) as)
-  TmFatBar t1 t2 -> TmFatBar (subst v1 v2 t1) (subst v1 v2 t2)
+  TmAbs v t      -> TmAbs    v (substTm v1 v2 t)
+  TmApp t1 t2    -> TmApp    (substTm v1 v2 t1) (substTm v1 v2 t2)
+  TmLet v t1 t2  -> TmLet    v (substTm v1 v2 t1) (substTm v1 v2 t2)
+  TmCase t as    -> TmCase   (substTm v1 v2 t) (map (substAlt v1 v2) as)
+  TmFatBar t1 t2 -> TmFatBar (substTm v1 v2 t1) (substTm v1 v2 t2)
 
 -- | Check if an alternative equation contains a variable
 isVar :: Equation -> Bool
 isVar (((HsPatVar _):_), _) = True
-isVar (((HsPatCons _ _):_), _) = False
+isVar _ = False
 
 -- | Check if an alternative equation contains a constructor
 isCon :: Equation -> Bool
@@ -546,7 +546,8 @@ isCon = not . isVar
 
 -- | Get the constructor from an alternative equation
 getCon :: Equation -> RnDataCon
-getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor alternative"
+getCon ([], _)                  = error "getCon called on empty equation"
+getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor equation"
 getCon (((HsPatCons c _):_), _) = c
 
 -- | Generate fresh renamed variable
@@ -563,22 +564,25 @@ constructors c = error "Not implemented" -- TODO
 
 -- Get ariry of data constructor
 arity :: RnDataCon -> Int
-arity c = error "Not implemented" -- TODO
+arity k = error "Not implemented" -- TODO
 
 -- | Apply variable rule
 matchVar :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
-matchVar (u:us) qs def = match us [(ps, subst u v e) | ((HsPatVar v):ps, e) <- qs] def
+matchVar [] qs def = error "matchVar called with no variables"
+matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
 matchAlt :: RnDataCon -> [RnTmVar] -> [Equation] -> RnTerm -> GenM RnAlt
+matchAlt c []     qs def = error "matchAlt called with no variables"
 matchAlt c (u:us) qs def = do
   let k' = arity c
   us' <- replicateM k' makeVar
-  matched <- (match (us' ++ us) [(ps' ++ ps, e) | (HsPatCons c ps' : ps, e) <- qs] def)
+  matched <- (match (us' ++ us) [(ps' ++ ps, e) | (HsPatCons _ ps' : ps, e) <- qs] def)
   return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
 
 -- | Apply constructor rule
 matchCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
+matchCon []     qs def = error "matchCon called with no variables"
 matchCon (u:us) qs def = do
   cs   <- constructors $ getCon $ head qs
   alts <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
@@ -589,6 +593,7 @@ matchVarCon :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
   | isCon $ head qs = matchCon us qs def
+  | otherwise       = error "Equation does not start with constructor or variable"
 
 -- | Match function
 match :: [RnTmVar] -> [Equation] -> RnTerm -> GenM RnTerm
@@ -605,7 +610,7 @@ elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> RnMonoTy {- Result type           -}
           -> RnAlt    {- Case alternative      -}
           -> GenM FcAlt
-elabHsAlt scr_ty res_ty (HsAlt (HsPatVar x) rhs) = error "Not implemented: top level variable binding "
+elabHsAlt _ _ (HsAlt (HsPatVar _) _) = error "Not implemented: top level variable binding "
 elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
   fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation

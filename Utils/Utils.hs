@@ -27,8 +27,8 @@ notImplemented e = error ("Not Implemented: " ++ e)
 -- Parition adjacent elements based on equality to return of given function
 -- E.g. partition odd [1,3,2,4,1] = [[1,3],[2,4],[1]]
 partition :: (Eq b) => (a -> b) -> [a] -> [[a]]
-partition f []       = []
-partition f [x]      = [[x]]
+partition _ []       = []
+partition _ [x]      = [[x]]
 partition f (x:y:xs)
   | f x == f y = tack x (partition f (y : xs))
   | otherwise  = [x] : partition f (y : xs)
