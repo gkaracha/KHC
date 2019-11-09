@@ -560,7 +560,7 @@ getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor equa
 makeVar :: GenM RnTmVar
 makeVar = freshRnTmVar
 
--- TODO: DOCU
+-- Choose all equations that start with the given data constructor
 choose :: RnDataCon -> [PmEquation] -> [PmEquation]
 choose c qs = [q | q <- qs, (getCon q) == c]
 
@@ -579,38 +579,42 @@ arity :: RnDataCon -> GenM Int
 arity dc = liftGenM (length . hs_dc_arg_tys <$> lookupTcEnvM tc_env_dc_info dc)
 
 -- | Apply variable rule
-matchVar :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
+matchVar :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
 matchVar [] qs def = throwErrorM $ text "matchVar called with no variables"
 matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
-matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnAlt
-matchAlt c []     qs def = throwErrorM $ text "matchAlt called with no variables"
-matchAlt c (u:us) qs def = do
-  k'      <- arity c
-  us'     <- replicateM k' makeVar
-  matched <- match (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def
-  return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
+matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM FcAlt
+matchAlt dc []     qs def = throwErrorM $ text "matchAlt called with no variables"
+matchAlt dc (u:us) qs def = do
+  k'          <- arity dc
+  fc_dc       <- liftGenM (lookupDataCon dc)
+  us'         <- replicateM k' makeVar
+  (_, rhs_tm) <- match (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- TODO: do something with these types
+  let fc_us' = map rnTmVarToFcTmVar us'
+  return $ FcAlt (FcConPat fc_dc fc_us') rhs_tm
 
 -- | Apply constructor rule
-matchCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
+matchCon :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
 matchCon []     qs def = throwErrorM $ text "matchCon called with no variables"
 matchCon (u:us) qs def = do
   let cs = constructors qs
-  alts <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
-  return $ TmCase (TmVar u) alts
+  alts         <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
+  rhs_ty       <- TyVar <$> freshRnTyVar KStar        -- Generate a fresh type variable for the result
+  (_, fc_tm)   <- elabTmVar u -- TODO: do something with these types
+  return (rhs_ty, FcTmCase fc_tm alts)
 
 -- | Is given list of variable and equations and calls matchVar or matchCon
-matchVarCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
+matchVarCon :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
   | isCon $ head qs = matchCon us qs def
   | otherwise       = throwErrorM $ text "Equation does not start with constructor or variable"
 
 -- | Match function
-match :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
+match :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
 match [] []    def = return def     -- No variables + no equations = return default
-match [] (q:_) def = return $ rhs q -- No variables = return right hand side first equation + ignore rest
+match [] (q:_) def = elabTerm $ rhs q -- No variables = return elaborated right hand side first equation + ignore rest
 match us qs    def = foldrM (matchVarCon us) def (partition isVar qs)
 
 getExps :: [RnPat] -> [RnTmVar]
