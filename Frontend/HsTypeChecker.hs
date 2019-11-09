@@ -563,8 +563,8 @@ constructors :: RnDataCon -> GenM [RnDataCon]
 constructors c = error "Not implemented" -- TODO
 
 -- Get ariry of data constructor
-arity :: RnDataCon -> Int
-arity k = error "Not implemented" -- TODO
+arity :: RnDataCon -> GenM Int
+arity dc = liftGenM (length . hs_dc_arg_tys <$> lookupTcEnvM tc_env_dc_info dc)
 
 -- | Apply variable rule
 matchVar :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
@@ -575,8 +575,8 @@ matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <-
 matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnAlt
 matchAlt c []     qs def = error "matchAlt called with no variables"
 matchAlt c (u:us) qs def = do
-  let k' = arity c
-  us' <- replicateM k' makeVar
+  k'      <- arity c
+  us'     <- replicateM k' makeVar
   matched <- (match (us' ++ us) [(ps' ++ ps, e) | (HsPatCons _ ps' : ps, e) <- qs] def)
   return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
 
