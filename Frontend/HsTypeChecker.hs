@@ -500,8 +500,14 @@ rnTmVarToFcTerm = FcTmVar . rnTmVarToFcTmVar
 
 type PmEquation = ([RnPat], RnTerm)
 
+rhs :: PmEquation -> RnTerm
+rhs = snd
+
 altToEquation :: RnAlt -> PmEquation
 altToEquation (HsAlt p t) = ([p], t)
+
+notImplemented :: String -> a
+notImplemented e = error $ "Not Implemented: " ++ e
 
 -- | Elaborate a case expression
 elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
@@ -533,22 +539,22 @@ substTm v1 v2 t' = case t' of
   TmApp t1 t2    -> TmApp    (substTm v1 v2 t1) (substTm v1 v2 t2)
   TmLet v t1 t2  -> TmLet    v (substTm v1 v2 t1) (substTm v1 v2 t2)
   TmCase t as    -> TmCase   (substTm v1 v2 t) (map (substAlt v1 v2) as)
-  TmFatBar t1 t2 -> TmFatBar (substTm v1 v2 t1) (substTm v1 v2 t2)
 
--- | Check if an alternative equation contains a variable
+-- | Check if first pattern of equation contains a variable
 isVar :: PmEquation -> Bool
 isVar (((HsPatVar _):_), _) = True
-isVar _ = False
+isVar _                     = False
 
--- | Check if an alternative equation contains a constructor
+-- | Check if first pattern of equation contains a constructor
 isCon :: PmEquation -> Bool
-isCon = not . isVar
+isCon (((HsPatCons _ _):_), _) = True
+isCon _                        = False
 
 -- | Get the constructor from an alternative equation
 getCon :: PmEquation -> RnDataCon
+getCon (((HsPatCons c _):_), _) = c
 getCon ([], _)                  = error "getCon called on empty equation"
 getCon (((HsPatVar _):_), _)    = error "getCon called on a non-constructor equation"
-getCon (((HsPatCons c _):_), _) = c
 
 -- | Generate fresh renamed variable
 makeVar :: GenM RnTmVar
@@ -560,7 +566,7 @@ choose c qs = [q | q <- qs, (getCon q) == c]
 
 -- Get list of all related data constructors
 constructors :: RnDataCon -> GenM [RnDataCon]
-constructors c = error "Not implemented" -- TODO
+constructors c = notImplemented "constructors method" -- TODO
 
 -- Get ariry of data constructor
 arity :: RnDataCon -> GenM Int
@@ -568,12 +574,12 @@ arity dc = liftGenM (length . hs_dc_arg_tys <$> lookupTcEnvM tc_env_dc_info dc)
 
 -- | Apply variable rule
 matchVar :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
-matchVar [] qs def = error "matchVar called with no variables"
+matchVar [] qs def = throwErrorM $ text "matchVar called with no variables"
 matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
 matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnAlt
-matchAlt c []     qs def = error "matchAlt called with no variables"
+matchAlt c []     qs def = throwErrorM $ text "matchAlt called with no variables"
 matchAlt c (u:us) qs def = do
   k'      <- arity c
   us'     <- replicateM k' makeVar
@@ -582,7 +588,7 @@ matchAlt c (u:us) qs def = do
 
 -- | Apply constructor rule
 matchCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
-matchCon []     qs def = error "matchCon called with no variables"
+matchCon []     qs def = throwErrorM $ text "matchCon called with no variables"
 matchCon (u:us) qs def = do
   cs   <- constructors $ getCon $ head qs
   alts <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
@@ -593,16 +599,17 @@ matchVarCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
   | isCon $ head qs = matchCon us qs def
-  | otherwise       = error "Equation does not start with constructor or variable"
+  | otherwise       = throwErrorM $ text "Equation does not start with constructor or variable"
 
 -- | Match function
 match :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
-match [] qs def = return $ foldr TmFatBar         def [e | ([], e) <- qs]
-match us qs def = foldrM (matchVarCon us) def (partition isVar qs)
+match [] []    def = return def     -- No variables + no equations = return default
+match [] (q:_) def = return $ rhs q -- No variables = return right hand side first equation + ignore rest
+match us qs    def = foldrM (matchVarCon us) def (partition isVar qs)
 
 getExps :: [RnPat] -> [RnTmVar]
 getExps []                   = []
-getExps ((HsPatCons _ _):_ ) = error "Not implemented: Nested patterns"
+getExps ((HsPatCons _ _):_ ) = notImplemented "Nested patterns"
 getExps ((HsPatVar  x  ):ps) = x : getExps ps
 
 -- | Elaborate a case alternative
@@ -610,7 +617,7 @@ elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> RnMonoTy {- Result type           -}
           -> RnAlt    {- Case alternative      -}
           -> GenM FcAlt
-elabHsAlt _ _ (HsAlt (HsPatVar _) _) = error "Not implemented: top level variable binding "
+elabHsAlt _ _ (HsAlt (HsPatVar _) _) = notImplemented "Top level variable binding "
 elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
   fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation

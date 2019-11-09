@@ -113,7 +113,6 @@ data Term a = TmVar (HsTmVar a)                   -- ^ Term variable
             | TmApp (Term a) (Term a)             -- ^ Term application
             | TmLet (HsTmVar a) (Term a) (Term a) -- ^ Letrec var = term in term
             | TmCase (Term a) [HsAlt a]           -- ^ case e of { ... }
-            | TmFatBar (Term a) (Term a)
 
 -- | Parsed/renamed term
 type PsTerm = Term Sym
