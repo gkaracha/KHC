@@ -564,9 +564,15 @@ makeVar = freshRnTmVar
 choose :: RnDataCon -> [PmEquation] -> [PmEquation]
 choose c qs = [q | q <- qs, (getCon q) == c]
 
--- Get list of all related data constructors
-constructors :: RnDataCon -> GenM [RnDataCon]
-constructors c = notImplemented "constructors method" -- TODO
+-- Get list of unique constructors in the given list of equation
+constructors :: [PmEquation] -> [RnDataCon]
+constructors = foldr extractUniqueCs []
+  where
+    extractUniqueCs :: PmEquation -> [RnDataCon] -> [RnDataCon]
+    extractUniqueCs ((HsPatCons cs _):ps, _) acc
+      | elem cs acc       = acc
+      | otherwise         = (cs : acc)
+    extractUniqueCs _ acc = acc
 
 -- Get ariry of data constructor
 arity :: RnDataCon -> GenM Int
@@ -583,18 +589,18 @@ matchAlt c []     qs def = throwErrorM $ text "matchAlt called with no variables
 matchAlt c (u:us) qs def = do
   k'      <- arity c
   us'     <- replicateM k' makeVar
-  matched <- (match (us' ++ us) [(ps' ++ ps, e) | (HsPatCons _ ps' : ps, e) <- qs] def)
+  matched <- match (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def
   return $ HsAlt (HsPatCons c (map (HsPatVar) us')) matched
 
 -- | Apply constructor rule
 matchCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchCon []     qs def = throwErrorM $ text "matchCon called with no variables"
 matchCon (u:us) qs def = do
-  cs   <- constructors $ getCon $ head qs
+  let cs = constructors qs
   alts <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
   return $ TmCase (TmVar u) alts
 
--- | Is given list of variable and alternatives and calls matchVar or matchCon
+-- | Is given list of variable and equations and calls matchVar or matchCon
 matchVarCon :: [RnTmVar] -> [PmEquation] -> RnTerm -> GenM RnTerm
 matchVarCon us qs def
   | isVar $ head qs = matchVar us qs def
