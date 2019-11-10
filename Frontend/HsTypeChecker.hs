@@ -579,43 +579,79 @@ arity :: RnDataCon -> GenM Int
 arity dc = liftGenM (length . hs_dc_arg_tys <$> lookupTcEnvM tc_env_dc_info dc)
 
 -- | Apply variable rule
-matchVar :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
-matchVar [] qs def = throwErrorM $ text "matchVar called with no variables"
-matchVar (u:us) qs def = match us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
+matchVar :: RnMonoTy                {- Type of the scrutinee -}
+         -> RnMonoTy                {- Result type           -}
+         -> [RnTmVar]
+         -> [PmEquation]
+         -> (RnMonoTy, FcTerm)
+         -> GenM (RnMonoTy, FcTerm)
+matchVar _      _      [] qs def = throwErrorM $ text "matchVar called with no variables"
+matchVar scr_ty res_ty (u:us) qs def = match scr_ty res_ty us [(ps, substTm u v e) | ((HsPatVar v):ps, e) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
-matchAlt :: RnDataCon -> [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM FcAlt
-matchAlt dc []     qs def = throwErrorM $ text "matchAlt called with no variables"
-matchAlt dc (u:us) qs def = do
-  k'          <- arity dc
-  fc_dc       <- liftGenM (lookupDataCon dc)
-  us'         <- replicateM k' makeVar
-  (_, rhs_tm) <- match (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- TODO: do something with these types
+matchAlt :: RnMonoTy                {- Type of the scrutinee -}
+         -> RnMonoTy                {- Result type           -}
+         -> RnDataCon
+         -> [RnTmVar]
+         -> [PmEquation]
+         -> (RnMonoTy, FcTerm)
+         -> GenM FcAlt
+matchAlt _      _      dc []     qs def = throwErrorM $ text "matchAlt called with no variables"
+matchAlt scr_ty res_ty dc (u:us) qs def = do
+  k'                     <- arity dc
+  us'                    <- replicateM k' makeVar
+
+  (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc)      -- Get the constructor's signature
+  fc_dc                  <- liftGenM (lookupDataCon dc)   -- Get the constructor's System F representation
+  (bs, ty_subst)         <- liftGenM (freshenRnTyVars as) -- Generate fresh universal type variables for the universal tvs
+  let arg_tys            = map (substInPolyTy ty_subst) orig_arg_tys -- Apply the renaming substitution to the argument types
+  let matched_rhs        = match scr_ty res_ty (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- Match the remaining right hand side
+  (rhs_ty, fc_rhs)       <- extendCtxTmsM us' arg_tys matched_rhs -- Type check the matched right hand side
+  -- TODO: store equality constrains for pattern and result
   let fc_us' = map rnTmVarToFcTmVar us'
-  return $ FcAlt (FcConPat fc_dc fc_us') rhs_tm
+  return $ FcAlt (FcConPat fc_dc fc_us') fc_rhs
 
 -- | Apply constructor rule
-matchCon :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
-matchCon []     qs def = throwErrorM $ text "matchCon called with no variables"
-matchCon (u:us) qs def = do
+matchCon :: RnMonoTy                {- Type of the scrutinee -}
+         -> RnMonoTy                {- Result type           -}
+         -> [RnTmVar]
+         -> [PmEquation]
+         -> (RnMonoTy, FcTerm)
+         -> GenM (RnMonoTy, FcTerm)
+matchCon _      _      []     qs def = throwErrorM $ text "matchCon called with no variables"
+matchCon scr_ty res_ty (u:us) qs def = do
+  -- TODO: implement necesary type passing and equality constraints
   let cs = constructors qs
-  alts         <- mapM (\c -> matchAlt c (u:us) (choose c qs) def) cs
+  alts         <- mapM (\c -> matchAlt scr_ty res_ty c (u:us) (choose c qs) def) cs
   rhs_ty       <- TyVar <$> freshRnTyVar KStar        -- Generate a fresh type variable for the result
-  (_, fc_tm)   <- elabTmVar u -- TODO: do something with these types
+  (_, fc_tm)   <- elabTmVar u
   return (rhs_ty, FcTmCase fc_tm alts)
 
 -- | Is given list of variable and equations and calls matchVar or matchCon
-matchVarCon :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
-matchVarCon us qs def
-  | isVar $ head qs = matchVar us qs def
-  | isCon $ head qs = matchCon us qs def
+matchVarCon :: RnMonoTy                {- Type of the scrutinee -}
+            -> RnMonoTy                {- Result type           -}
+            -> [RnTmVar]
+            -> [PmEquation]
+            -> (RnMonoTy, FcTerm)
+            -> GenM (RnMonoTy, FcTerm)
+matchVarCon scr_ty res_ty us qs def
+  | isVar $ head qs = matchVar scr_ty res_ty us qs def
+  | isCon $ head qs = matchCon scr_ty res_ty us qs def
   | otherwise       = throwErrorM $ text "Equation does not start with constructor or variable"
 
 -- | Match function
-match :: [RnTmVar] -> [PmEquation] -> (RnMonoTy, FcTerm) -> GenM (RnMonoTy, FcTerm)
-match [] []    def = return def     -- No variables + no equations = return default
-match [] (q:_) def = elabTerm $ rhs q -- No variables = return elaborated right hand side first equation + ignore rest
-match us qs    def = foldrM (matchVarCon us) def (partition isVar qs)
+match :: RnMonoTy                {- Type of the scrutinee -}
+      -> RnMonoTy                {- Result type           -}
+      -> [RnTmVar]               {- Fresh term variables  -}
+      -> [PmEquation]            {- Equations             -}
+      -> (RnMonoTy, FcTerm)      {- Default expression    -}
+      -> GenM (RnMonoTy, FcTerm) {- Match result          -}
+match _      _      [] []    def = return def -- No variables + no equations = return default
+match scr_ty res_ty [] (q:_) def = do         -- No variables = return elaborated right hand side first equation + ignore rest
+  (rhs_ty, fc_rhs) <- elabTerm $ rhs q -- Elaborate rhs of the equation
+  storeEqCs [ res_ty :~: rhs_ty ]      -- Result type match rhs type
+  return (rhs_ty, fc_rhs)
+match scr_ty res_ty us qs    def = foldrM (matchVarCon scr_ty res_ty us) def (partition isVar qs)
 
 getExps :: [RnPat] -> [RnTmVar]
 getExps []                   = []
@@ -629,15 +665,14 @@ elabHsAlt :: RnMonoTy {- Type of the scrutinee -}
           -> GenM FcAlt
 elabHsAlt _ _ (HsAlt (HsPatVar _) _) = notImplemented "Top level variable binding "
 elabHsAlt scr_ty res_ty (HsAlt (HsPatCons dc pats) rhs) = do
-  (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc) -- Get the constructor's signature
-  fc_dc <- liftGenM (lookupDataCon dc)               -- Get the constructor's System F representation
-
-  (bs, ty_subst) <- liftGenM (freshenRnTyVars as)                 -- Generate fresh universal type variables for the universal tvs
-  let arg_tys = map (substInPolyTy ty_subst) orig_arg_tys         -- Apply the renaming substitution to the argument types
+  (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc)                -- Get the constructor's signature
+  fc_dc                  <- liftGenM (lookupDataCon dc)             -- Get the constructor's System F representation
+  (bs, ty_subst)         <- liftGenM (freshenRnTyVars as)           -- Generate fresh universal type variables for the universal tvs
+  let arg_tys = map (substInPolyTy ty_subst) orig_arg_tys           -- Apply the renaming substitution to the argument types
   let xs = getExps pats
-  (rhs_ty, fc_rhs) <- extendCtxTmsM xs arg_tys (elabTerm rhs)     -- Type check the right hand side
-  storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)    -- The scrutinee type must match the pattern type
-            , res_ty :~: rhs_ty ]                                 -- All right hand sides should be the same
+  (rhs_ty, fc_rhs)       <- extendCtxTmsM xs arg_tys (elabTerm rhs) -- Type check the right hand side
+  storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs)      -- The scrutinee type must match the pattern type
+            , res_ty :~: rhs_ty ]                                   -- All right hand sides should be the same
   return (FcAlt (FcConPat fc_dc (map rnTmVarToFcTmVar xs)) fc_rhs)
 
 -- * Type Unification
