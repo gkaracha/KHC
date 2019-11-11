@@ -498,28 +498,6 @@ rnTmVarToFcTerm = FcTmVar . rnTmVarToFcTmVar
 -- * Pattern Match Elaboration
 -- ----------------------------------------------------
 
-type PmEqn = ([RnPat], RnTerm)
-
-get_rhs :: PmEqn -> RnTerm
-get_rhs = snd
-
-altToEqn :: RnAlt -> PmEqn
-altToEqn (HsAlt p t) = ([p], t)
-
-defaultTerm :: GenM (RnMonoTy, FcTerm)
-defaultTerm = do
-  ty <- TyVar   <$> freshRnTyVar KStar
-  tm <- FcTmVar <$> freshFcTmVar
-  return (ty, tm)
-
--- | Elaborate a case expression
-elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
-elabTmCase scr alts = do
-  let qs           = map altToEqn alts
-  x                <- makeVar
-  def              <- defaultTerm
-  match scr [x] qs def
-
 -- | Suprised all this doesn't exist yet? Is it needed?
 -- | Substitute (in the given pattern) all variables equal to given HsTmVar with second HsTmVar
 substPat :: Eq a => HsTmVar a -> HsTmVar a -> HsPat a -> HsPat a
@@ -541,6 +519,29 @@ substTm v1 v2 t' = case t' of
   TmApp t1 t2    -> TmApp    (substTm v1 v2 t1) (substTm v1 v2 t2)
   TmLet v t1 t2  -> TmLet    v (substTm v1 v2 t1) (substTm v1 v2 t2)
   TmCase t as    -> TmCase   (substTm v1 v2 t) (map (substAlt v1 v2) as)
+
+type PmEqn = ([RnPat], RnTerm)
+
+get_rhs :: PmEqn -> RnTerm
+get_rhs = snd
+
+altToEqn :: RnAlt -> PmEqn
+altToEqn (HsAlt p t) = ([p], t)
+
+defaultTerm :: GenM (RnMonoTy, FcTerm)
+defaultTerm = do
+  ty <- TyVar   <$> freshRnTyVar KStar
+  tm <- FcTmVar <$> freshFcTmVar
+  return (ty, tm)
+
+-- | Elaborate a case expression
+elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
+elabTmCase scr ((HsAlt (HsPatVar x) rhs):_) = elabTmApp (TmAbs x rhs) scr
+elabTmCase scr alts = do
+  let qs           = map altToEqn alts
+  x                <- makeVar
+  def              <- defaultTerm
+  match scr [x] qs def
 
 -- | Check if first pattern of equation contains a variable
 isVar :: PmEqn -> Bool
@@ -604,11 +605,12 @@ matchAlt scr_ty res_ty dc (u:us) qs def = do
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc)      -- Get the constructor's signature
   fc_dc                  <- liftGenM (lookupDataCon dc)   -- Get the constructor's System F representation
   (bs, ty_subst)         <- liftGenM (freshenRnTyVars as) -- Generate fresh universal type variables for the universal tvs
-  let scr                = TmVar u                        -- Create new scrutinee
+  let scr                = TmVar u -- TODO: this is wrong, new scr = TmVar (head us)
   let arg_tys            = map (substInPolyTy ty_subst) orig_arg_tys -- Apply the renaming substitution to the argument types
   let matched_rhs        = match scr (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- Match the remaining right hand side
-  (_, fc_rhs)            <- extendCtxTmsM us' arg_tys matched_rhs -- Type check the matched right hand side
-  storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs) ]
+  (rhs_ty, fc_rhs)       <- extendCtxTmsM us' arg_tys matched_rhs -- Type check the matched right hand side
+  storeEqCs             [ rhs_ty :~: res_ty
+                        , scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs) ]
   let fc_us'             = map rnTmVarToFcTmVar us'
   return $ FcAlt (FcConPat fc_dc fc_us') fc_rhs
 
@@ -638,7 +640,7 @@ matchVarCon scr us qs def
   | otherwise       = throwErrorM $ text "Equation does not start with constructor or variable"
 
 -- | Match function
-match :: RnTerm                  {- The scrutinee -}
+match :: RnTerm                  {- The scrutinee -} -- TODO: this should be a Maybe? There isn't always a scrutinee
       -> [RnTmVar]               {- Fresh term variables  -}
       -> [PmEqn]                 {- Equations             -}
       -> (RnMonoTy, FcTerm)      {- Default expression    -}
