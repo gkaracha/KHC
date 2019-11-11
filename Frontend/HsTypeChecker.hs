@@ -515,14 +515,10 @@ defaultTerm = do
 -- | Elaborate a case expression
 elabTmCase :: RnTerm -> [RnAlt] -> GenM (RnMonoTy, FcTerm)
 elabTmCase scr alts = do
-  (scr_ty, _)      <- elabTerm scr                  -- Elaborate the scrutinee
-  res_ty           <- TyVar <$> freshRnTyVar KStar  -- Generate a fresh type variable for the result
   let qs           = map altToEqn alts
   x                <- makeVar
   def              <- defaultTerm
-  (ty, tm)         <- extendCtxTmM x (monoTyToPolyTy scr_ty) (match scr_ty res_ty [x] qs def)
-  -- throwErrorM $ text "Result" <+> colon <+> ppr tm <+> colon <+> ppr ty
-  return (ty, tm)
+  match scr [x] qs def
 
 -- | Suprised all this doesn't exist yet? Is it needed?
 -- | Substitute (in the given pattern) all variables equal to given HsTmVar with second HsTmVar
@@ -585,78 +581,72 @@ arity :: RnDataCon -> GenM Int
 arity dc = liftGenM (length . hs_dc_arg_tys <$> lookupTcEnvM tc_env_dc_info dc)
 
 -- | Apply variable rule
-matchVar :: RnMonoTy                {- Type of the scrutinee -}
-         -> RnMonoTy                {- Result type           -}
-         -> [RnTmVar]
-         -> [PmEqn]
-         -> (RnMonoTy, FcTerm)
-         -> GenM (RnMonoTy, FcTerm)
-matchVar _      _      []     _  _   = throwErrorM $ text "matchVar called with no variables"
-matchVar scr_ty res_ty (u:us) qs def = match scr_ty res_ty us [(ps, substTm v u rhs) | ((HsPatVar v):ps, rhs) <- qs] def
+matchVar :: RnTerm                  {- The scrutinee -}
+         -> [RnTmVar]               {- Fresh term variables  -}
+         -> [PmEqn]                 {- Equations             -}
+         -> (RnMonoTy, FcTerm)      {- Default expression    -}
+         -> GenM (RnMonoTy, FcTerm) {- Match result          -}
+matchVar _   []     _  _   = throwErrorM $ text "matchVar called with no variables"
+matchVar scr (u:us) qs def = match scr us [(ps, substTm v u rhs) | ((HsPatVar v):ps, rhs) <- qs] def
 
 -- | Match alternative (equivalent to matchClause in algorithm description)
-matchAlt :: RnMonoTy                {- Type of the scrutinee -}
-         -> RnMonoTy                {- Result type           -}
-         -> RnDataCon
-         -> [RnTmVar]
-         -> [PmEqn]
-         -> (RnMonoTy, FcTerm)
-         -> GenM FcAlt
+matchAlt :: RnMonoTy              {- The type of the scrutinee -}
+         -> RnMonoTy              {- Result type   -}
+         -> RnDataCon             {- Data constructor of this alternative-}
+         -> [RnTmVar]             {- Fresh term variables  -}
+         -> [PmEqn]               {- Equations             -}
+         -> (RnMonoTy, FcTerm)    {- Default expression    -}
+         -> GenM FcAlt            {- Match result          -}
 matchAlt _      _      _  []     _  _   = throwErrorM $ text "matchAlt called with no variables"
-matchAlt scr_ty res_ty dc (_:us) qs def = do
+matchAlt scr_ty res_ty dc (u:us) qs def = do
   k'                     <- arity dc                      -- Calculate arity k of current data constructor
   us'                    <- replicateM k' makeVar         -- Generate k fresh term variables
   (as, orig_arg_tys, tc) <- liftGenM (dataConSig dc)      -- Get the constructor's signature
   fc_dc                  <- liftGenM (lookupDataCon dc)   -- Get the constructor's System F representation
   (bs, ty_subst)         <- liftGenM (freshenRnTyVars as) -- Generate fresh universal type variables for the universal tvs
+  let scr                = TmVar u                        -- Create new scrutinee
   let arg_tys            = map (substInPolyTy ty_subst) orig_arg_tys -- Apply the renaming substitution to the argument types
-  let matched_rhs        = match scr_ty res_ty (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- Match the remaining right hand side
+  let matched_rhs        = match scr (us' ++ us) [(ps' ++ ps, rhs) | ((HsPatCons _ ps'):ps, rhs) <- qs] def -- Match the remaining right hand side
   (_, fc_rhs)            <- extendCtxTmsM us' arg_tys matched_rhs -- Type check the matched right hand side
   storeEqCs [ scr_ty :~: foldl TyApp (TyCon tc) (map TyVar bs) ]
   let fc_us'             = map rnTmVarToFcTmVar us'
   return $ FcAlt (FcConPat fc_dc fc_us') fc_rhs
 
 -- | Apply constructor rule
-matchCon :: RnMonoTy                {- Type of the scrutinee -}
-         -> RnMonoTy                {- Result type           -}
-         -> [RnTmVar]
-         -> [PmEqn]
-         -> (RnMonoTy, FcTerm)
-         -> GenM (RnMonoTy, FcTerm)
-matchCon _      _      []     _  _   = throwErrorM $ text "matchCon called with no variables"
-matchCon _      res_ty (u:us) qs def = do
-  let cs                 = constructors qs -- Get all unique data constructors
-  (new_scr_ty, fc_scr)   <- elabTmVar u    -- Elaborate new scrutinee
-  alts                   <- mapM (\c -> matchAlt new_scr_ty res_ty c (u:us) (choose c qs) def) cs -- Match all alternatives
+matchCon :: RnTerm                  {- The scrutinee -}
+         -> [RnTmVar]               {- Fresh term variables  -}
+         -> [PmEqn]                 {- Equations             -}
+         -> (RnMonoTy, FcTerm)      {- Default expression    -}
+         -> GenM (RnMonoTy, FcTerm) {- Match result          -}
+matchCon _   []     _  _   = throwErrorM $ text "matchCon called with no variables"
+matchCon scr (u:us) qs def = do
+  let cs             = constructors qs -- Get all unique data constructors
+  res_ty             <- TyVar <$> freshRnTyVar KStar
+  (scr_ty, fc_scr)   <- elabTerm scr    -- Elaborate scrutinee
+  alts               <- mapM (\c -> matchAlt scr_ty res_ty c (u:us) (choose c qs) def) cs -- Match all alternatives
   return (res_ty, FcTmCase fc_scr alts)
 
 -- | Is given list of variable and equations and calls matchVar or matchCon
-matchVarCon :: RnMonoTy                {- Type of the scrutinee -}
-            -> RnMonoTy                {- Result type           -}
-            -> [RnTmVar]
-            -> [PmEqn]
-            -> (RnMonoTy, FcTerm)
-            -> GenM (RnMonoTy, FcTerm)
-matchVarCon scr_ty res_ty us qs def
-  | isVar $ head qs = matchVar scr_ty res_ty us qs def
-  | isCon $ head qs = matchCon scr_ty res_ty us qs def
+matchVarCon :: RnTerm                  {- The scrutinee -}
+            -> [RnTmVar]               {- Fresh term variables  -}
+            -> [PmEqn]                 {- Equations             -}
+            -> (RnMonoTy, FcTerm)      {- Default expression    -}
+            -> GenM (RnMonoTy, FcTerm) {- Match result          -}
+matchVarCon scr us qs def
+  | isVar $ head qs = matchVar scr us qs def
+  | isCon $ head qs = matchCon scr us qs def
   | otherwise       = throwErrorM $ text "Equation does not start with constructor or variable"
 
 -- | Match function
-match :: RnMonoTy                {- Type of the scrutinee -}
-      -> RnMonoTy                {- Result type           -}
+match :: RnTerm                  {- The scrutinee -}
       -> [RnTmVar]               {- Fresh term variables  -}
       -> [PmEqn]                 {- Equations             -}
       -> (RnMonoTy, FcTerm)      {- Default expression    -}
       -> GenM (RnMonoTy, FcTerm) {- Match result          -}
-match _      _      [] []    def = return def -- No variables + no equations = return default
-match _      res_ty [] (q:_) _   = do         -- No variables = return elaborated right hand side first equation + ignore rest
-  (rhs_ty, fc_rhs) <- elabTerm $ get_rhs q -- Elaborate rhs of the equation
-  storeEqCs [ res_ty :~: rhs_ty ]          -- Result type match rhs type
-  return (rhs_ty, fc_rhs)
-match scr_ty res_ty us qs    def =
-  let part_qs = partition isVar qs in -- Group variables & non-variable equations together
-  foldrM (matchVarCon scr_ty res_ty us) def part_qs
+match _   [] []    def = return def           -- No variables + no equations = return default
+match _   [] (q:_) _   = elabTerm $ get_rhs q -- No variables = return elaborated right hand side first equation + ignore rest
+match scr us qs    def = foldrM (matchVarCon scr us) def (partition isVar qs) -- Group variables & non-variable equations together
+
 
 -- * Type Unification
 -- ------------------------------------------------------------------------------
